@@ -301,9 +301,6 @@
     }
   }
 
-  function startPresenceHeartbeat(buildPresenceRow) {
-    const cfg = readConnection();
-    if (cfg.mode !== 'google' || !cfg.autoSync) return null;
 
     return setInterval(async function () {
       try {
@@ -338,6 +335,5 @@
     addInternalNote,
     savePresence,
     saveMonthlyPriceSnapshot,
-    startPresenceHeartbeat
   };
 })();
