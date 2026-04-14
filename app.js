@@ -2947,6 +2947,5 @@ document.addEventListener('visibilitychange', () => {
 
 window.addEventListener('DOMContentLoaded', async () => {
   await bootstrapFromGoogleIfNeeded();
-  ensureGoogleHeartbeat();
   init();
 });
