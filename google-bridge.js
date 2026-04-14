@@ -2,20 +2,21 @@
   const STORE_KEY = 'google_connection_settings_v1';
   const STATUS_KEY = 'google_sync_status_v1';
 
-  function safeParse(v, fallback) {
-    try { return JSON.parse(v); } catch { return fallback; }
+  function safeParse(value, fallback) {
+    try {
+      return JSON.parse(value);
+    } catch (e) {
+      return fallback;
+    }
   }
 
-  function readConnection() {
-    const cfg = safeParse(localStorage.getItem(STORE_KEY) || '{}', {});
-    return {
-      mode: (cfg.mode || 'local').trim(),
-      appsScriptUrl: (cfg.appsScriptUrl || '').trim(),
-      spreadsheetId: (cfg.spreadsheetId || '').trim(),
-      spreadsheetUrl: (cfg.spreadsheetUrl || '').trim(),
-      pdfFolderId: (cfg.pdfFolderId || '').trim(),
-      autoSync: !!cfg.autoSync
-    };
+  function emitStatus(next) {
+    try {
+      localStorage.setItem(STATUS_KEY, JSON.stringify(next));
+      window.dispatchEvent(new CustomEvent('google-sync-status', { detail: next }));
+    } catch (e) {
+      console.error('google-sync-status error', e);
+    }
   }
 
   function setSyncStatus(patch) {
@@ -23,118 +24,212 @@
     const next = Object.assign({}, current, patch, {
       timestamp: new Date().toISOString()
     });
-    localStorage.setItem(STATUS_KEY, JSON.stringify(next));
-    window.dispatchEvent(new CustomEvent('google-sync-status', { detail: next }));
+    emitStatus(next);
+    return next;
+  }
+
+  function readConnection() {
+    const cfg = safeParse(localStorage.getItem(STORE_KEY) || '{}', {});
+    return {
+      mode: typeof cfg.mode === 'string' ? cfg.mode : 'local',
+      appsScriptUrl: typeof cfg.appsScriptUrl === 'string' ? cfg.appsScriptUrl.trim() : '',
+      spreadsheetId: typeof cfg.spreadsheetId === 'string' ? cfg.spreadsheetId.trim() : '',
+      spreadsheetUrl: typeof cfg.spreadsheetUrl === 'string' ? cfg.spreadsheetUrl.trim() : '',
+      pdfFolderId: typeof cfg.pdfFolderId === 'string' ? cfg.pdfFolderId.trim() : '',
+      autoSync: !!cfg.autoSync
+    };
+  }
+
+  function writeConnection(next) {
+    localStorage.setItem(STORE_KEY, JSON.stringify(next || {}));
+    return true;
   }
 
   function getBaseUrl() {
     const cfg = readConnection();
-    if (!cfg.appsScriptUrl) throw new Error('Apps Script URL puudub');
+    if (!cfg.appsScriptUrl) {
+      throw new Error('Apps Script URL puudub');
+    }
     return cfg.appsScriptUrl;
   }
 
-  async function getJson(url) {
-    const res = await fetch(url, { method: 'GET', cache: 'no-store' });
+  async function readJsonResponse(res) {
     const text = await res.text();
-    return JSON.parse(text);
-  }
-
-  async function postForm(action, dataObj) {
-    const url = getBaseUrl();
-    const params = new URLSearchParams();
-    params.set('action', action);
-    params.set('data', JSON.stringify(dataObj || {}));
-
-    const res = await fetch(url, {
-      method: 'POST',
-      body: params
-    });
-
-    const text = await res.text();
-    return JSON.parse(text);
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      throw new Error(text || 'Vigane serveri vastus');
+    }
   }
 
   async function ping() {
-    setSyncStatus({ state: 'testing', reason: 'manual', message: 'Ühenduse test...' });
-    const data = await getJson(getBaseUrl() + '?action=ping&_ts=' + Date.now());
+    try {
+      setSyncStatus({
+        state: 'testing',
+        reason: 'manual',
+        message: 'Ühenduse test...'
+      });
 
-    if (!data.ok) throw new Error(data.message || 'Ping ebaõnnestus');
+      const url = getBaseUrl() + '?action=ping&_ts=' + Date.now();
+      const res = await fetch(url, { method: 'GET', cache: 'no-store' });
+      const data = await readJsonResponse(res);
 
-    setSyncStatus({
-      state: 'ok',
-      reason: 'manual',
-      message: data.message || 'pong',
-      checked: true,
-      sheets: []
-    });
+      if (!data || !data.ok) {
+        throw new Error((data && data.message) || 'Ping ebaõnnestus');
+      }
 
-    return data;
+      setSyncStatus({
+        state: 'ok',
+        reason: 'manual',
+        message: data.message || 'pong',
+        checked: true,
+        sheets: []
+      });
+
+      return data;
+    } catch (err) {
+      setSyncStatus({
+        state: 'error',
+        reason: 'manual',
+        message: err.message || String(err),
+        checked: false,
+        sheets: []
+      });
+      throw err;
+    }
   }
 
   async function bootstrap() {
-    const cfg = readConnection();
-    if (cfg.mode !== 'google') return null;
+    try {
+      const cfg = readConnection();
+      if (cfg.mode !== 'google' || !cfg.appsScriptUrl) {
+        return null;
+      }
 
-    setSyncStatus({ state: 'syncing', reason: 'bootstrap', message: 'Andmete laadimine...' });
+      setSyncStatus({
+        state: 'syncing',
+        reason: 'bootstrap',
+        message: 'Andmete laadimine...'
+      });
 
-    const data = await getJson(getBaseUrl() + '?action=bootstrap&_ts=' + Date.now());
+      const url = getBaseUrl() + '?action=bootstrap&_ts=' + Date.now();
+      const res = await fetch(url, { method: 'GET', cache: 'no-store' });
+      const data = await readJsonResponse(res);
 
-    if (!data.ok || !data.data) throw new Error(data.message || 'Bootstrap ebaõnnestus');
+      if (!data || !data.ok || !data.data) {
+        throw new Error((data && data.message) || 'Bootstrap ebaõnnestus');
+      }
 
-    localStorage.setItem('toorained_data_v6_3', JSON.stringify(data.data.toorained || []));
-    localStorage.setItem('tarnijad_data_v6_3', JSON.stringify(data.data.tarnijad || []));
-    localStorage.setItem('logs_data_v6_3', JSON.stringify(data.data.logs || []));
-    localStorage.setItem('internal_notes_v6_3', JSON.stringify(data.data.internalNotes || []));
-    localStorage.setItem('presence_data_v6_3', JSON.stringify(data.data.presence || []));
+      if (Array.isArray(data.data.toorained)) {
+        localStorage.setItem('toorained_data_v6_3', JSON.stringify(data.data.toorained));
+      }
+      if (Array.isArray(data.data.tarnijad)) {
+        localStorage.setItem('tarnijad_data_v6_3', JSON.stringify(data.data.tarnijad));
+      }
+      if (Array.isArray(data.data.logs)) {
+        localStorage.setItem('logs_data_v6_3', JSON.stringify(data.data.logs));
+      }
+      if (Array.isArray(data.data.internalNotes)) {
+        localStorage.setItem('internal_notes_v6_3', JSON.stringify(data.data.internalNotes));
+      }
+      if (Array.isArray(data.data.presence)) {
+        localStorage.setItem('presence_data_v6_3', JSON.stringify(data.data.presence));
+      }
 
-    setSyncStatus({
-      state: 'ok',
-      reason: 'bootstrap',
-      message: 'Andmed laaditud',
-      checked: true,
-      sheets: Object.keys(data.data)
-    });
+      setSyncStatus({
+        state: 'ok',
+        reason: 'bootstrap',
+        message: 'Andmed laaditud',
+        checked: true,
+        sheets: Object.keys(data.data)
+      });
 
-    return data.data;
+      return data.data;
+    } catch (err) {
+      setSyncStatus({
+        state: 'error',
+        reason: 'bootstrap',
+        message: err.message || String(err),
+        checked: false,
+        sheets: []
+      });
+      console.error('bootstrap error', err);
+      return null;
+    }
   }
 
   async function syncSingle(type, payload) {
-    const cfg = readConnection();
-    if (cfg.mode !== 'google') {
-      return { ok: false, skipped: true, message: 'Google režiim ei ole aktiivne' };
+    try {
+      const cfg = readConnection();
+
+      if (cfg.mode !== 'google') {
+        return { ok: false, skipped: true, message: 'Google režiim ei ole aktiivne' };
+      }
+
+      const actionMap = {
+        'tooraine-save': 'upsertTooraine',
+        'tooraine-delete': 'deleteTooraine',
+        'tarnija-save': 'upsertTarnija',
+        'tarnija-delete': 'deleteTarnija',
+        'log-append': 'appendLog',
+        'internal-note': 'addInternalNote',
+        'presence': 'savePresence'
+      };
+
+      const action = actionMap[type];
+      if (!action) {
+        throw new Error('Tundmatu sync tüüp: ' + type);
+      }
+
+      setSyncStatus({
+        state: 'syncing',
+        reason: type,
+        message: 'Sünkroonimine...'
+      });
+
+      const params = new URLSearchParams();
+      params.set('action', action);
+      params.set('data', JSON.stringify(payload || {}));
+
+      const res = await fetch(getBaseUrl(), {
+        method: 'POST',
+        body: params
+      });
+
+      const data = await readJsonResponse(res);
+
+      if (!data || !data.ok) {
+        throw new Error((data && data.message) || 'Sünkroonimine ebaõnnestus');
+      }
+
+      setSyncStatus({
+        state: 'ok',
+        reason: type,
+        message: 'Sünkroonimine õnnestus',
+        checked: true,
+        sheets: [data.sheet || action]
+      });
+
+      return data;
+    } catch (err) {
+      setSyncStatus({
+        state: 'error',
+        reason: type,
+        message: err.message || String(err),
+        checked: false,
+        sheets: []
+      });
+      console.error('syncSingle error', type, err);
+      throw err;
     }
-
-    setSyncStatus({ state: 'syncing', reason: type, message: 'Sünkroonimine...' });
-
-    let result;
-
-    if (type === 'tooraine-save') result = await postForm('upsertTooraine', payload);
-    else if (type === 'tooraine-delete') result = await postForm('deleteTooraine', { id: payload.id });
-    else if (type === 'tarnija-save') result = await postForm('upsertTarnija', payload);
-    else if (type === 'tarnija-delete') result = await postForm('deleteTarnija', { id: payload.id });
-    else if (type === 'log-append') result = await postForm('appendLog', payload);
-    else if (type === 'internal-note') result = await postForm('addInternalNote', payload);
-    else if (type === 'presence') result = await postForm('savePresence', payload);
-    else throw new Error('Tundmatu sync tüüp: ' + type);
-
-    if (!result.ok) throw new Error(result.message || 'Sünkroonimine ebaõnnestus');
-
-    setSyncStatus({
-      state: 'ok',
-      reason: type,
-      message: 'Sünkroonimine õnnestus',
-      checked: true,
-      sheets: [result.sheet || 'unknown']
-    });
-
-    return result;
   }
 
   window.GoogleBridge = {
-    readConnection,
-    setSyncStatus,
-    ping,
-    bootstrap,
-    syncSingle
+    readConnection: readConnection,
+    writeConnection: writeConnection,
+    setSyncStatus: setSyncStatus,
+    ping: ping,
+    bootstrap: bootstrap,
+    syncSingle: syncSingle
   };
 })();
