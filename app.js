@@ -603,13 +603,6 @@ function scheduleGoogleAutoSync(reason = 'auto') {
   }, 5000);
 }
 
-function ensureGoogleHeartbeat() {
-  clearInterval(syncRuntime.heartbeatTimer);
-  const cfg = getGoogleConfig();
-  if (cfg.mode !== 'google' || !cfg.autoSync || !(cfg.appsScriptUrl || '').trim()) return;
-  syncRuntime.heartbeatTimer = setInterval(() => {
-    syncAllDataToGoogle('heartbeat');
-  }, 60000);
 }
 
 async function bootstrapFromGoogleIfNeeded() {
