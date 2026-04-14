@@ -2,16 +2,12 @@
   const STORE_KEY = 'google_connection_settings_v1';
   const STATUS_KEY = 'google_sync_status_v1';
 
-  function safeJsonParse(value, fallback) {
-    try {
-      return JSON.parse(value);
-    } catch (e) {
-      return fallback;
-    }
+  function safeParse(v, fallback) {
+    try { return JSON.parse(v); } catch { return fallback; }
   }
 
   function readConnection() {
-    const cfg = safeJsonParse(localStorage.getItem(STORE_KEY) || '{}', {});
+    const cfg = safeParse(localStorage.getItem(STORE_KEY) || '{}', {});
     return {
       mode: (cfg.mode || 'local').trim(),
       appsScriptUrl: (cfg.appsScriptUrl || '').trim(),
@@ -22,12 +18,8 @@
     };
   }
 
-  function writeConnection(next) {
-    localStorage.setItem(STORE_KEY, JSON.stringify(next));
-  }
-
   function setSyncStatus(patch) {
-    const current = safeJsonParse(localStorage.getItem(STATUS_KEY) || '{}', {});
+    const current = safeParse(localStorage.getItem(STATUS_KEY) || '{}', {});
     const next = Object.assign({}, current, patch, {
       timestamp: new Date().toISOString()
     });
@@ -35,54 +27,38 @@
     window.dispatchEvent(new CustomEvent('google-sync-status', { detail: next }));
   }
 
-  function getSyncStatus() {
-    return safeJsonParse(localStorage.getItem(STATUS_KEY) || '{}', {});
-  }
-
   function getBaseUrl() {
     const cfg = readConnection();
-    if (!cfg.appsScriptUrl) {
-      throw new Error('Apps Script URL puudub');
-    }
-    return cfg.appsScriptUrl.trim();
+    if (!cfg.appsScriptUrl) throw new Error('Apps Script URL puudub');
+    return cfg.appsScriptUrl;
   }
 
   async function getJson(url) {
-    const res = await fetch(url, {
-      method: 'GET',
-      cache: 'no-store'
-    });
+    const res = await fetch(url, { method: 'GET', cache: 'no-store' });
     const text = await res.text();
-    try {
-      return JSON.parse(text);
-    } catch (e) {
-      throw new Error(text || 'Vigane vastus serverist');
-    }
+    return JSON.parse(text);
   }
 
-  function buildUrl(action, dataObj) {
-    const base = getBaseUrl();
-    const url = new URL(base);
-    url.searchParams.set('action', action);
-    url.searchParams.set('_ts', String(Date.now()));
-    if (dataObj !== undefined) {
-      url.searchParams.set('data', JSON.stringify(dataObj));
-    }
-    return url.toString();
+  async function postForm(action, dataObj) {
+    const url = getBaseUrl();
+    const params = new URLSearchParams();
+    params.set('action', action);
+    params.set('data', JSON.stringify(dataObj || {}));
+
+    const res = await fetch(url, {
+      method: 'POST',
+      body: params
+    });
+
+    const text = await res.text();
+    return JSON.parse(text);
   }
 
   async function ping() {
-    setSyncStatus({
-      state: 'testing',
-      reason: 'manual',
-      message: 'Ühenduse test...'
-    });
+    setSyncStatus({ state: 'testing', reason: 'manual', message: 'Ühenduse test...' });
+    const data = await getJson(getBaseUrl() + '?action=ping&_ts=' + Date.now());
 
-    const data = await getJson(buildUrl('ping'));
-
-    if (!data || !data.ok) {
-      throw new Error((data && data.message) || 'Ping ebaõnnestus');
-    }
+    if (!data.ok) throw new Error(data.message || 'Ping ebaõnnestus');
 
     setSyncStatus({
       state: 'ok',
@@ -97,43 +73,19 @@
 
   async function bootstrap() {
     const cfg = readConnection();
-    if (cfg.mode !== 'google') {
-      return null;
-    }
+    if (cfg.mode !== 'google') return null;
 
-    setSyncStatus({
-      state: 'syncing',
-      reason: 'bootstrap',
-      message: 'Andmete laadimine Google Sheetsist...'
-    });
+    setSyncStatus({ state: 'syncing', reason: 'bootstrap', message: 'Andmete laadimine...' });
 
-    const data = await getJson(buildUrl('bootstrap'));
+    const data = await getJson(getBaseUrl() + '?action=bootstrap&_ts=' + Date.now());
 
-    if (!data || !data.ok || !data.data) {
-      throw new Error((data && data.message) || 'Bootstrap ebaõnnestus');
-    }
+    if (!data.ok || !data.data) throw new Error(data.message || 'Bootstrap ebaõnnestus');
 
-    if (Array.isArray(data.data.toorained)) {
-      localStorage.setItem('toorained_data_v6_3', JSON.stringify(data.data.toorained));
-    }
-    if (Array.isArray(data.data.tarnijad)) {
-      localStorage.setItem('tarnijad_data_v6_3', JSON.stringify(data.data.tarnijad));
-    }
-    if (Array.isArray(data.data.users)) {
-      localStorage.setItem('users_data_v6_3', JSON.stringify(data.data.users));
-    }
-    if (Array.isArray(data.data.logs)) {
-      localStorage.setItem('logs_data_v6_3', JSON.stringify(data.data.logs));
-    }
-    if (Array.isArray(data.data.internalNotes)) {
-      localStorage.setItem('internal_notes_v6_3', JSON.stringify(data.data.internalNotes));
-    }
-    if (Array.isArray(data.data.presence)) {
-      localStorage.setItem('presence_data_v6_3', JSON.stringify(data.data.presence));
-    }
-    if (Array.isArray(data.data.monthlyPriceSnapshots)) {
-      localStorage.setItem('monthly_price_snapshots_v6_3', JSON.stringify(data.data.monthlyPriceSnapshots));
-    }
+    localStorage.setItem('toorained_data_v6_3', JSON.stringify(data.data.toorained || []));
+    localStorage.setItem('tarnijad_data_v6_3', JSON.stringify(data.data.tarnijad || []));
+    localStorage.setItem('logs_data_v6_3', JSON.stringify(data.data.logs || []));
+    localStorage.setItem('internal_notes_v6_3', JSON.stringify(data.data.internalNotes || []));
+    localStorage.setItem('presence_data_v6_3', JSON.stringify(data.data.presence || []));
 
     setSyncStatus({
       state: 'ok',
@@ -146,194 +98,43 @@
     return data.data;
   }
 
-  async function saveTooraine(row) {
-    const data = await getJson(buildUrl('upsertTooraine', row));
-    if (!data || !data.ok) {
-      throw new Error((data && data.message) || 'Tooraine salvestamine ebaõnnestus');
-    }
-    setSyncStatus({
-      state: 'ok',
-      reason: 'tooraine-save',
-      message: 'Tooraine salvestatud',
-      checked: true,
-      sheets: ['Toorained']
-    });
-    return data;
-  }
-
-  async function deleteTooraine(id) {
-    const data = await getJson(buildUrl('deleteTooraine', { id }));
-    if (!data || !data.ok) {
-      throw new Error((data && data.message) || 'Tooraine kustutamine ebaõnnestus');
-    }
-    setSyncStatus({
-      state: 'ok',
-      reason: 'tooraine-delete',
-      message: 'Tooraine kustutatud',
-      checked: true,
-      sheets: ['Toorained']
-    });
-    return data;
-  }
-
-  async function saveTarnija(row) {
-    const data = await getJson(buildUrl('upsertTarnija', row));
-    if (!data || !data.ok) {
-      throw new Error((data && data.message) || 'Tarnija salvestamine ebaõnnestus');
-    }
-    setSyncStatus({
-      state: 'ok',
-      reason: 'tarnija-save',
-      message: 'Tarnija salvestatud',
-      checked: true,
-      sheets: ['Tarnijad']
-    });
-    return data;
-  }
-
-  async function deleteTarnija(id) {
-    const data = await getJson(buildUrl('deleteTarnija', { id }));
-    if (!data || !data.ok) {
-      throw new Error((data && data.message) || 'Tarnija kustutamine ebaõnnestus');
-    }
-    setSyncStatus({
-      state: 'ok',
-      reason: 'tarnija-delete',
-      message: 'Tarnija kustutatud',
-      checked: true,
-      sheets: ['Tarnijad']
-    });
-    return data;
-  }
-
-  async function appendLog(row) {
-    const data = await getJson(buildUrl('appendLog', row));
-    if (!data || !data.ok) {
-      throw new Error((data && data.message) || 'Logi lisamine ebaõnnestus');
-    }
-    setSyncStatus({
-      state: 'ok',
-      reason: 'log-append',
-      message: 'Logi lisatud',
-      checked: true,
-      sheets: ['Logs']
-    });
-    return data;
-  }
-
-  async function addInternalNote(row) {
-    const data = await getJson(buildUrl('addInternalNote', row));
-    if (!data || !data.ok) {
-      throw new Error((data && data.message) || 'Märkme lisamine ebaõnnestus');
-    }
-    setSyncStatus({
-      state: 'ok',
-      reason: 'internal-note',
-      message: 'Märkus lisatud',
-      checked: true,
-      sheets: ['InternalNotes']
-    });
-    return data;
-  }
-
-  async function savePresence(row) {
-    const data = await getJson(buildUrl('savePresence', row));
-    if (!data || !data.ok) {
-      throw new Error((data && data.message) || 'Presence salvestamine ebaõnnestus');
-    }
-    setSyncStatus({
-      state: 'ok',
-      reason: 'presence',
-      message: 'Presence uuendatud',
-      checked: true,
-      sheets: ['Presence']
-    });
-    return data;
-  }
-
-  async function saveMonthlyPriceSnapshot(row) {
-    const data = await getJson(buildUrl('saveMonthlyPriceSnapshot', row));
-    if (!data || !data.ok) {
-      throw new Error((data && data.message) || 'Kuu hinnasnapshot ebaõnnestus');
-    }
-    setSyncStatus({
-      state: 'ok',
-      reason: 'monthly-price-snapshot',
-      message: 'Kuu hinnasnapshot salvestatud',
-      checked: true,
-      sheets: ['MonthlyPriceSnapshots']
-    });
-    return data;
-  }
-
   async function syncSingle(type, payload) {
     const cfg = readConnection();
-
     if (cfg.mode !== 'google') {
       return { ok: false, skipped: true, message: 'Google režiim ei ole aktiivne' };
     }
 
+    setSyncStatus({ state: 'syncing', reason: type, message: 'Sünkroonimine...' });
+
+    let result;
+
+    if (type === 'tooraine-save') result = await postForm('upsertTooraine', payload);
+    else if (type === 'tooraine-delete') result = await postForm('deleteTooraine', { id: payload.id });
+    else if (type === 'tarnija-save') result = await postForm('upsertTarnija', payload);
+    else if (type === 'tarnija-delete') result = await postForm('deleteTarnija', { id: payload.id });
+    else if (type === 'log-append') result = await postForm('appendLog', payload);
+    else if (type === 'internal-note') result = await postForm('addInternalNote', payload);
+    else if (type === 'presence') result = await postForm('savePresence', payload);
+    else throw new Error('Tundmatu sync tüüp: ' + type);
+
+    if (!result.ok) throw new Error(result.message || 'Sünkroonimine ebaõnnestus');
+
     setSyncStatus({
-      state: 'syncing',
+      state: 'ok',
       reason: type,
-      message: 'Sünkroonimine...'
+      message: 'Sünkroonimine õnnestus',
+      checked: true,
+      sheets: [result.sheet || 'unknown']
     });
 
-    switch (type) {
-      case 'tooraine-save':
-        return saveTooraine(payload);
-      case 'tooraine-delete':
-        return deleteTooraine(payload.id);
-      case 'tarnija-save':
-        return saveTarnija(payload);
-      case 'tarnija-delete':
-        return deleteTarnija(payload.id);
-      case 'log-append':
-        return appendLog(payload);
-      case 'internal-note':
-        return addInternalNote(payload);
-      case 'presence':
-        return savePresence(payload);
-      case 'monthly-price-snapshot':
-        return saveMonthlyPriceSnapshot(payload);
-      default:
-        throw new Error('Tundmatu syncSingle tüüp: ' + type);
-    }
-  }
-
-
-    return setInterval(async function () {
-      try {
-        const row = typeof buildPresenceRow === 'function' ? buildPresenceRow() : null;
-        if (!row) return;
-        await savePresence(row);
-      } catch (err) {
-        setSyncStatus({
-          state: 'error',
-          reason: 'presence',
-          message: err.message || String(err),
-          checked: false,
-          sheets: []
-        });
-      }
-    }, 120000);
+    return result;
   }
 
   window.GoogleBridge = {
     readConnection,
-    writeConnection,
-    getSyncStatus,
     setSyncStatus,
     ping,
     bootstrap,
-    syncSingle,
-    saveTooraine,
-    deleteTooraine,
-    saveTarnija,
-    deleteTarnija,
-    appendLog,
-    addInternalNote,
-    savePresence,
-    saveMonthlyPriceSnapshot,
+    syncSingle
   };
 })();
