@@ -1,0 +1,1 @@
+window.googleBridge = { ready: true };
